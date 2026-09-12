@@ -162,7 +162,7 @@ export interface QueryResultSet {
   readonly affectedRows: number | null;
 }
 
-export type ExportFormat = 'json' | 'csv' | 'html' | 'pdf';
+export type ExportFormat = 'json' | 'csv' | 'html';
 
 export interface ExportTableData {
   readonly title: string;
