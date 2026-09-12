@@ -23,9 +23,15 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export function nonce(): string {
   return randomBytes(18).toString('base64');
+}
+
+export function readWebviewTemplate(extensionPath: string, name: string): string {
+  return readFileSync(join(extensionPath, 'webview', name), 'utf8');
 }
 
 export function escapeHtml(value: string): string {
