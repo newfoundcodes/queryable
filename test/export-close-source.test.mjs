@@ -26,8 +26,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const workbench = await readFile(new URL('../src/ui/workbench.ts', import.meta.url), 'utf8');
-const home = await readFile(new URL('../src/ui/homeView.ts', import.meta.url), 'utf8');
+const workbench = [
+  await readFile(new URL('../src/ui/workbench.ts', import.meta.url), 'utf8'),
+  await readFile(new URL('../webview/workbench.html', import.meta.url), 'utf8'),
+].join('\n');
+const home = [
+  await readFile(new URL('../src/ui/homeView.ts', import.meta.url), 'utf8'),
+  await readFile(new URL('../webview/home.html', import.meta.url), 'utf8'),
+].join('\n');
 const extension = await readFile(new URL('../src/extension.ts', import.meta.url), 'utf8');
 const types = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
 const exporter = await readFile(new URL('../src/export/tableExport.ts', import.meta.url), 'utf8');
@@ -61,7 +67,7 @@ test('Export button uses native VS Code webview context menu routing', () => {
   assert.match(types, /command: 'exportData'/);
   assert.match(types, /command: 'exportRequested'/);
 
-  assert.equal(packageJson.contributes.menus['webview/context'].length, 4);
+  assert.equal(packageJson.contributes.menus['webview/context'].length, 3);
 
   for (const item of packageJson.contributes.menus['webview/context']) {
     assert.match(item.when, /webviewId == 'queryable\.connection'/);
@@ -69,15 +75,14 @@ test('Export button uses native VS Code webview context menu routing', () => {
   }
 });
 
-test('extension registers JSON, CSV, HTML, and PDF export commands', () => {
-  for (const format of ['Json', 'Csv', 'Html', 'Pdf']) {
+test('extension registers JSON, CSV, and HTML export commands', () => {
+  for (const format of ['Json', 'Csv', 'Html']) {
     assert.match(extension, new RegExp(`queryable\\.export${format}`));
   }
 
   assert.match(exporter, /case 'json'/);
   assert.match(exporter, /case 'csv'/);
   assert.match(exporter, /case 'html'/);
-  assert.match(exporter, /case 'pdf'/);
 
   assert.match(workbench, /showSaveDialog/);
   assert.match(workbench, /workspace\.fs\.writeFile/);
