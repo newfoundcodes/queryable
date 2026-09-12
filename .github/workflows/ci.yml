@@ -5,7 +5,15 @@ on:
     branches:
       - main
       - master
+    paths:
+      - 'scripts/**'
+      - 'src/**'
+      - 'webview/**'
   pull_request:
+    paths:
+      - 'scripts/**'
+      - 'src/**'
+      - 'webview/**'
 
 permissions:
   contents: read
@@ -16,11 +24,12 @@ concurrency:
 
 jobs:
   quality:
-    name: Node ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Node ${{ matrix.node-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node-version: [20.x, 22.x]
 
     steps:
@@ -52,9 +61,8 @@ jobs:
         run: npm run package
 
       - name: Upload VSIX artifact
-        if: matrix.node-version == '22.x'
         uses: actions/upload-artifact@v4
         with:
-          name: queryable-vsix
+          name: queryable-vsix-${{ matrix.os }}-node-${{ matrix.node-version }}
           path: '*.vsix'
           if-no-files-found: error
