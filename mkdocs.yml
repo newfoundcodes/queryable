@@ -1,0 +1,64 @@
+site_name: Queryable Documentation
+site_description: Complete user, administrator, and developer documentation for the Queryable VS Code database workbench.
+site_author: Newfoundcodes
+repo_name: newfoundcodes/queryable
+repo_url: https://github.com/newfoundcodes/queryable
+edit_uri: edit/main/docs/
+copyright: Copyright © 2026 Newfoundcodes
+
+theme:
+  name: mkdocs
+  language: en
+  font: false
+  logo: media/queryable.png
+  palette:
+    scheme: default
+    primary: white
+    accent: \#00c5ff
+
+extra_css:
+  - stylesheets/styles.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - First connection: getting-started/first-connection.md
+      - Quick tour: getting-started/quick-tour.md
+  - User manual:
+      - Connections: manual/connections.md
+      - Workbench: manual/workbench.md
+      - SQL and query results: manual/sql-and-results.md
+      - Tables, paging, and edits: manual/tables-and-edits.md
+      - Exports: manual/exports.md
+  - Database guide:
+      - Support matrix: databases/index.md
+      - Network databases: databases/network.md
+      - Local files: databases/local-files.md
+      - Cloudflare D1: databases/cloudflare-d1.md
+  - Operations:
+      - Security and credentials: operations/security.md
+      - TLS and SSH: operations/tls-and-ssh.md
+      - Troubleshooting: operations/troubleshooting.md
+      - Limitations and behavior: operations/limitations.md
+  - Developer guide:
+      - Architecture: development/architecture.md
+      - Local development: development/local-development.md
+      - Testing and quality: development/testing.md
+      - Packaging and release: development/packaging.md
+      - Adding a database adapter: development/adding-adapter.md
+  - Reference:
+      - Commands and keyboard shortcuts: reference/commands.md
+      - Data model and terminology: reference/data-model.md
+      - FAQ: reference/faq.md
+
+plugins:
+  - search
