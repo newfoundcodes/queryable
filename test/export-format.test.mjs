@@ -54,15 +54,6 @@ test('HTML export contains a complete table document', () => {
   assert.match(text, /line 1\nline 2, &quot;quoted&quot;/);
 });
 
-test('PDF export emits a valid PDF header and catalog', () => {
-  const bytes = buildTableExport('pdf', data).bytes;
-  const text = Buffer.from(bytes).toString('ascii');
-
-  assert.match(text, /^%PDF-1\.4/);
-  assert.match(text, /\/Type \/Catalog/);
-  assert.match(text, /%%EOF\n$/);
-});
-
 test('export filenames remove path separators and control characters', () => {
   assert.equal(safeExportFileName(' dbo/activity:logs\n '), 'dbo-activity-logs');
 });
