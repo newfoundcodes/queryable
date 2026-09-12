@@ -9,6 +9,7 @@
   "version": "0.1.15",
   "publisher": "newfoundcodes",
   "license": "AGPL-3.0-only",
+  "icon": "media/queryable.png",
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -39,10 +40,6 @@
       {
         "command": "queryable.exportHtml",
         "title": "HTML"
-      },
-      {
-        "command": "queryable.exportPdf",
-        "title": "PDF"
       }
     ],
     "viewsContainers": {
@@ -79,11 +76,6 @@
           "command": "queryable.exportHtml",
           "when": "webviewId == 'queryable.connection' && webviewSection == 'queryableExport'",
           "group": "queryable.export@3"
-        },
-        {
-          "command": "queryable.exportPdf",
-          "when": "webviewId == 'queryable.connection' && webviewSection == 'queryableExport'",
-          "group": "queryable.export@4"
         }
       ],
       "commandPalette": [
@@ -97,10 +89,6 @@
         },
         {
           "command": "queryable.exportHtml",
-          "when": "false"
-        },
-        {
-          "command": "queryable.exportPdf",
           "when": "false"
         }
       ]
