@@ -50,8 +50,10 @@ async function files(dir) {
 let failed = false;
 for (const file of await files(root.pathname)) {
   const text = await readFile(file, 'utf8');
+  const source = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
   for (const rule of banned) {
-    if (rule.pattern.test(text)) {
+    if (rule.pattern.test(source)) {
       console.error(`${file}: contains ${rule.label}`);
       failed = true;
     }
