@@ -1,0 +1,728 @@
+/*
+ * Queryable, A Newfoundcodes project.
+ *
+ * Copyright (C) 2026 Jonathan Eldy Baldivicio
+ *
+ * Author: Jonathan Eldy Baldivicio
+ * Contact: jonathaneldy.baldivicio@newfoundcodes.com
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import * as vscode from 'vscode';
+import { createDatabaseSession } from '../adapters/factory';
+import { ConnectionStore } from '../storage/connectionStore';
+import { errorText } from '../util/format';
+import { nonce } from './html';
+import type { DatabaseAdapter } from '../adapters/base';
+import type { ConnectionDraft, HomeHostMessage, HomeMessage, SavedConnection } from '../types';
+import type { WorkbenchOpenOptions } from './workbench';
+
+export type OpenConnectionHandler = (
+  connection: SavedConnection,
+  session: DatabaseAdapter,
+  options?: WorkbenchOpenOptions,
+) => Promise<void>;
+
+export class HomeViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = 'queryable.home';
+  private view: vscode.WebviewView | undefined;
+
+  public constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly store: ConnectionStore,
+    private readonly openConnection: OpenConnectionHandler,
+  ) {}
+
+  public resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.view = webviewView;
+
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [] };
+    webviewView.webview.html = this.html(webviewView.webview);
+    webviewView.webview.onDidReceiveMessage(
+      async (message: HomeMessage) => this.handle(message),
+      undefined,
+      this.context.subscriptions,
+    );
+
+    void this.sendConnections();
+  }
+
+  public async reveal(): Promise<void> {
+    await vscode.commands.executeCommand('workbench.view.extension.queryable');
+  }
+
+  private async post(message: HomeHostMessage): Promise<void> {
+    await this.view?.webview.postMessage(message);
+  }
+
+  private async sendConnections(): Promise<void> {
+    await this.post({ command: 'connections', connections: this.store.list() });
+  }
+
+  private async withDraftSession(
+    draft: ConnectionDraft,
+    open: boolean,
+    existingId?: string,
+  ): Promise<void> {
+    const connection = this.store.transientFromDraft(draft);
+    const secrets = this.store.runtimeSecretsForDraft(draft);
+    const session = await createDatabaseSession(connection, secrets);
+
+    try {
+      await session.connect();
+
+      if (open) {
+        const options: WorkbenchOpenOptions = {
+          saveOnClose: async () => {
+            if (existingId) {
+              await this.store.update(existingId, draft);
+            } else {
+              await this.store.save(draft);
+            }
+
+            await this.sendConnections();
+          },
+          savePromptDetail: existingId
+            ? 'This workbench was opened from edited connection settings that have not been saved. Save those changes, or continue closing without saving them.'
+            : 'This connection has not been saved yet. Save it to Saved Connections, or continue closing without saving it.',
+        };
+
+        await this.openConnection(connection, session, options);
+      } else {
+        await session.close();
+        await this.post({
+          command: 'status',
+          level: 'success',
+          message: 'Connection test succeeded.',
+        });
+      }
+    } catch (error) {
+      await session.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async withEditedDraftSession(
+    id: string,
+    draft: ConnectionDraft,
+    open: boolean,
+  ): Promise<void> {
+    const effectiveDraft = await this.store.draftForSavedEdit(id, draft, true);
+    await this.withDraftSession(effectiveDraft, open, id);
+  }
+
+  private async connectSaved(id: string): Promise<void> {
+    const connection = this.store.get(id);
+    if (!connection) {
+      throw new Error('Saved connection no longer exists.');
+    }
+
+    await this.post({ command: 'connectionLoading', id, value: true });
+
+    try {
+      const secrets = await this.store.runtimeSecretsForSaved(connection);
+      const session = await createDatabaseSession(connection, secrets);
+
+      try {
+        await session.connect();
+        await this.openConnection(connection, session);
+      } catch (error) {
+        await session.close().catch(() => undefined);
+        throw error;
+      }
+    } finally {
+      await this.post({ command: 'connectionLoading', id, value: false });
+    }
+  }
+
+  private async chooseFile(
+    target: Extract<HomeMessage, { readonly command: 'chooseFile' }>['target'],
+  ): Promise<void> {
+    const selection = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      canSelectFiles: true,
+      canSelectFolders: false,
+      openLabel: 'Select',
+      title: target === 'database' ? 'Select database file' : 'Select certificate or key file',
+    });
+
+    const file = selection?.[0];
+    if (file) {
+      await this.post({ command: 'chosenFile', target, filePath: file.fsPath });
+    }
+  }
+
+  private async handle(message: HomeMessage): Promise<void> {
+    try {
+      switch (message.command) {
+        case 'save': {
+          await this.store.save(message.draft);
+          await this.sendConnections();
+
+          await this.post({ command: 'status', level: 'success', message: 'Connection saved.' });
+          return;
+        }
+
+        case 'test':
+          await this.withDraftSession(message.draft, false);
+          return;
+
+        case 'connectDraft':
+          await this.withDraftSession(message.draft, true);
+          return;
+
+        case 'updateSaved':
+          await this.store.update(message.id, message.draft);
+          await this.sendConnections();
+          await this.post({ command: 'status', level: 'success', message: 'Connection updated.' });
+          return;
+
+        case 'testEdited':
+          await this.withEditedDraftSession(message.id, message.draft, false);
+          return;
+
+        case 'connectEdited':
+          await this.withEditedDraftSession(message.id, message.draft, true);
+          return;
+
+        case 'connectSaved':
+          await this.connectSaved(message.id);
+          return;
+
+        case 'deleteSaved': {
+          const connection = this.store.get(message.id);
+          if (!connection) {
+            return;
+          }
+
+          const answer = await vscode.window.showWarningMessage(
+            `Delete saved connection “${connection.name}”?`,
+            { modal: true },
+            'Delete',
+          );
+
+          if (answer === 'Delete') {
+            await this.store.delete(message.id);
+            await this.sendConnections();
+          }
+
+          return;
+        }
+
+        case 'chooseFile':
+          await this.chooseFile(message.target);
+          return;
+      }
+    } catch (error) {
+      await this.post({ command: 'status', level: 'error', message: errorText(error) });
+    }
+  }
+
+  private html(_: vscode.Webview): string {
+    const token = nonce();
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${token}'; script-src 'nonce-${token}';">
+<title>Queryable</title>
+<style nonce="${token}">
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+button, input, select { font: inherit; }
+.home { min-width: 0; }
+.home-tabs { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBarSectionHeader-background); margin: -10px -10px 10px; }
+.home-tab { min-width: 0; height: 32px; border: 0; border-right: 1px solid var(--vscode-panel-border); background: transparent; color: var(--vscode-sideBarSectionHeader-foreground); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
+.home-tab:last-child { border-right: 0; }
+.home-tab.active { color: var(--vscode-tab-activeForeground); background: var(--vscode-tab-activeBackground); box-shadow: inset 0 -1px 0 var(--vscode-focusBorder); }
+.home-tab:hover { background: var(--vscode-list-hoverBackground); }
+.home-panel { min-width: 0; }
+.home-panel[hidden] { display: none; }
+.db-grid { display: grid; grid-template-columns: repeat(3, minmax(64px, 1fr)); gap: 6px; }
+.db-card { min-height: 70px; border: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); color: var(--vscode-foreground); cursor: pointer; padding: 7px 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; }
+.db-card:hover, .saved:hover { background: var(--vscode-list-hoverBackground); }
+.db-card:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.db-icon { width: 25px; height: 25px; }
+.db-label { text-align: center; font-size: 11px; line-height: 1.2; }
+.saved-list { display: flex; flex-direction: column; gap: 5px; }
+.saved { border: 1px solid var(--vscode-panel-border); padding: 7px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; align-items: center; }
+.saved-main { width: 100%; display: grid; grid-template-columns: 16px minmax(0,1fr); gap: 7px; align-items: center; }
+.saved-copy { min-width: 0; }
+.connection-spinner { width: 12px; height: 12px; border: 2px solid var(--vscode-progressBar-background, var(--vscode-focusBorder)); border-right-color: transparent; border-radius: 50%; visibility: hidden; animation: connection-spin .75s linear infinite; }
+.saved.loading .connection-spinner { visibility: visible; }
+.saved.loading .saved-main { cursor: progress; }
+.saved-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+@keyframes connection-spin { to { transform: rotate(360deg); } }
+.saved-kind { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 2px; }
+.icon-button { border: 0; background: transparent; color: var(--vscode-foreground); cursor: pointer; padding: 3px 5px; }
+.empty { color: var(--vscode-descriptionForeground); padding: 8px 0; }
+.saved-context-menu { position: fixed; z-index: 60; min-width: 150px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); color: var(--vscode-menu-foreground, var(--vscode-editorWidget-foreground)); box-shadow: 0 4px 16px var(--vscode-widget-shadow); }
+.saved-context-menu[hidden] { display: none; }
+.saved-context-menu button { width: 100%; border: 0; padding: 5px 9px; text-align: left; background: transparent; color: inherit; cursor: pointer; }
+.saved-context-menu button:hover, .saved-context-menu button:focus-visible { background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); outline: none; }
+dialog { position: fixed; inset: auto; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0; width: min(640px, calc(100vw - 24px)); height: min(540px, calc(100vh - 24px)); min-width: min(340px, calc(100vw - 8px)); min-height: 260px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); resize: both; overflow: hidden; border: 1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); padding: 0; box-shadow: 0 6px 24px var(--vscode-widget-shadow); }
+dialog::backdrop { background: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent); }
+dialog form { height: calc(100% - 42px); min-height: 0; display: grid; grid-template-rows: minmax(0,1fr) auto; }
+.modal-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--vscode-panel-border); padding: 10px 12px; background: var(--vscode-titleBar-activeBackground, var(--vscode-editorGroupHeader-tabsBackground)); color: var(--vscode-titleBar-activeForeground, var(--vscode-foreground)); cursor: move; user-select: none; }
+.modal-title { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-body { min-height: 0; padding: 12px; overflow: auto; }
+.modal-body::-webkit-scrollbar { width: 12px; height: 12px; }
+.modal-body::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
+.modal-body::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
+.modal-body::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(150px,1fr)); gap: 9px 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field.full { grid-column: 1 / -1; }
+.field label { font-size: 11px; color: var(--vscode-descriptionForeground); }
+input, select { width: 100%; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 5px 6px; }
+.file-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px; }
+.primary, .secondary { border: 1px solid var(--vscode-button-border, transparent); padding: 6px 10px; cursor: pointer; }
+.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.primary:hover { background: var(--vscode-button-hoverBackground); }
+.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.modal-actions { border-top: 1px solid var(--vscode-panel-border); padding: 9px 12px; display: flex; justify-content: flex-end; gap: 7px; }
+.subsection { grid-column: 1 / -1; border-top: 1px solid var(--vscode-panel-border); margin-top: 3px; padding-top: 9px; }
+.advanced-toggle-row { display: flex; justify-content: flex-start; margin-top: 2px; }
+.advanced-toggle { display: inline-flex; align-items: center; gap: 6px; }
+.advanced-marker { width: 1em; text-align: center; }
+.advanced-fields { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(150px,1fr)); gap: 9px 12px; padding-top: 2px; }
+.advanced-fields[hidden] { display: none; }
+.toggle-row { display: flex; gap: 7px; align-items: center; }
+.toggle-row input { width: auto; }
+#sshFields[hidden] { display: none; }
+.status { position: fixed; left: 10px; right: 10px; bottom: 8px; border: 1px solid var(--vscode-notifications-border, var(--vscode-panel-border)); background: var(--vscode-notifications-background); color: var(--vscode-notifications-foreground); padding: 7px 9px; box-shadow: 0 2px 8px var(--vscode-widget-shadow); display: none; z-index: 20; }
+.status.show { display: block; }
+@media (max-width: 520px) { .form-grid, .advanced-fields { grid-template-columns: 1fr; } .field.full, .subsection, .advanced-fields { grid-column: 1; } }
+</style>
+</head>
+<body>
+<div class="home">
+  <div class="home-tabs" role="tablist" aria-label="Connection views">
+    <button class="home-tab active" id="savedConnectionsTab" type="button" role="tab" aria-selected="true" aria-controls="savedConnectionsPanel">Saved Connections</button>
+    <button class="home-tab" id="newConnectionsTab" type="button" role="tab" aria-selected="false" aria-controls="newConnectionsPanel">New Connections</button>
+  </div>
+  <section class="home-panel" id="savedConnectionsPanel" role="tabpanel" aria-labelledby="savedConnectionsTab">
+    <div class="saved-list" id="savedList"></div>
+  </section>
+  <section class="home-panel" id="newConnectionsPanel" role="tabpanel" aria-labelledby="newConnectionsTab" hidden>
+    <div class="db-grid" id="databaseGrid"></div>
+  </section>
+</div>
+<div class="saved-context-menu" id="savedContextMenu" role="menu" hidden>
+  <button id="editSavedConnection" type="button" role="menuitem">Edit</button>
+</div>
+<dialog id="connectionDialog">
+  <div class="modal-head" id="connectionDialogHandle"><div class="modal-title" id="modalTitle">Connection</div><button class="icon-button" id="closeModal" aria-label="Close">×</button></div>
+  <form id="connectionForm">
+    <div class="modal-body"><div class="form-grid" id="formFields"></div></div>
+    <div class="modal-actions">
+      <button type="button" class="secondary" data-action="save">Save</button>
+      <button type="button" class="secondary" data-action="test">Test</button>
+      <button type="button" class="primary" data-action="connectDraft">Connect</button>
+    </div>
+  </form>
+</dialog>
+<div class="status" id="status" role="status"></div>
+<script nonce="${token}">
+const vscode = acquireVsCodeApi();
+const dbs = [
+  ['postgres','Postgres',5432], ['sqlite3','SQLite3',0], ['mssql','Microsoft SQL',1433],
+  ['mysql','MySQL',3306], ['duckdb','DuckDB',0], ['d1','Cloudflare D1',0],
+  ['mariadb','MariaDB',3306], ['cockroachdb','CockroachDB',26257],
+  ['oracle','OracleDB',1521], ['db2','IBM Db2',50000]
+];
+const grid = document.getElementById('databaseGrid');
+const savedList = document.getElementById('savedList');
+const dialog = document.getElementById('connectionDialog');
+const formFields = document.getElementById('formFields');
+const modalTitle = document.getElementById('modalTitle');
+const statusBox = document.getElementById('status');
+const savedConnectionsTab = document.getElementById('savedConnectionsTab');
+const newConnectionsTab = document.getElementById('newConnectionsTab');
+const savedConnectionsPanel = document.getElementById('savedConnectionsPanel');
+const newConnectionsPanel = document.getElementById('newConnectionsPanel');
+const savedContextMenu = document.getElementById('savedContextMenu');
+const editSavedConnection = document.getElementById('editSavedConnection');
+let activeKind = 'postgres';
+let editingConnectionId = null;
+let contextConnectionId = null;
+let statusTimer = 0;
+const loadingConnectionIds = new Set();
+const connectionsById = new Map();
+
+function cylinderIcon() {
+  return '<svg class="db-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="5" rx="7" ry="3" stroke="currentColor"/><path d="M5 5v6c0 1.65 3.13 3 7 3s7-1.35 7-3V5M5 11v6c0 1.65 3.13 3 7 3s7-1.35 7-3v-6" stroke="currentColor"/></svg>';
+}
+
+for (const [kind, label] of dbs) {
+  const button = document.createElement('button');
+  button.className = 'db-card';
+  button.type = 'button';
+  button.dataset.kind = kind;
+  button.innerHTML = cylinderIcon() + '<span class="db-label"></span>';
+  button.querySelector('.db-label').textContent = label;
+  button.addEventListener('click', () => openModal(kind));
+  grid.appendChild(button);
+}
+
+function inputField(id, label, type = 'text', value = '', full = false) {
+  return '<div class="field' + (full ? ' full' : '') + '"><label for="' + id + '">' + label + '</label><input id="' + id + '" name="' + id + '" type="' + type + '" value="' + value + '"></div>';
+}
+function selectField(id, label, options, full = false) {
+  const html = options.map(([value,text]) => '<option value="' + value + '">' + text + '</option>').join('');
+  return '<div class="field' + (full ? ' full' : '') + '"><label for="' + id + '">' + label + '</label><select id="' + id + '" name="' + id + '">' + html + '</select></div>';
+}
+function fileField(id, label, target, full = false) {
+  return '<div class="field' + (full ? ' full' : '') + '"><label for="' + id + '">' + label + '</label><div class="file-row"><input id="' + id + '" name="' + id + '" type="text"><button class="secondary browse" type="button" data-target="' + target + '">Browse</button></div></div>';
+}
+function networkFields(port, kind) {
+  const tcpOnly = kind === 'mssql' || kind === 'oracle' || kind === 'db2';
+  const databaseLabel = kind === 'oracle' ? 'Service name' : 'Database name';
+  let certificateFields = fileField('keyPath','Key file','key') + fileField('certPath','Cert file','cert') + fileField('caPath','CA cert file','ca',true);
+  if (kind === 'oracle') certificateFields = fileField('caPath','Wallet PEM (ewallet.pem)','ca',true);
+  if (kind === 'db2') certificateFields = fileField('caPath','Server / CA certificate','ca',true);
+  return inputField('name','Connection name','','',true) +
+    inputField('hostOrSocket', tcpOnly ? 'Host' : 'Host / socket') + inputField('port','Port','number',String(port)) +
+    inputField('username','Username') + inputField('password','Password','password') +
+    inputField('database',databaseLabel,'','',true) +
+    '<div class="field full advanced-toggle-row"><button id="advancedToggle" class="secondary advanced-toggle" type="button" aria-expanded="false" aria-controls="advancedFields"><span id="advancedMarker" class="advanced-marker" aria-hidden="true">▸</span><span>Advanced</span></button></div>' +
+    '<div id="advancedFields" class="advanced-fields" hidden>' +
+      selectField('passwordPolicy','Password storage',[['keyring','Store in keyring'],['ask','Ask every time'],['none','No password']]) +
+      selectField('tlsMode','TLS / SSL',[['preferred','Preferred'],['disabled','Disabled'],['required','Required'],['verify-ca','Verify CA'],['verify-identity','Verify Identity']]) +
+      certificateFields +
+      '<div class="subsection"><label class="toggle-row"><input id="sshEnabled" type="checkbox"> SSH tunnel</label></div>' +
+      '<div id="sshFields" class="field full" hidden><div class="form-grid">' +
+        inputField('sshHost','SSH host') + inputField('sshPort','SSH port','number','22') +
+        inputField('sshUsername','SSH username') + selectField('sshAuthMode','SSH authentication',[['password','Password'],['private-key','Private key']]) +
+        inputField('sshPassword','SSH password','password') + fileField('sshPrivateKeyPath','SSH private key','ssh-key') +
+        inputField('sshKeyPassphrase','Key passphrase','password','',true) +
+      '</div></div>' +
+    '</div>';
+}
+function fileFields() {
+  return inputField('name','Connection name','','',true) + fileField('filePath','Database file','database',true);
+}
+function d1Fields() {
+  return inputField('name','Connection name','','',true) + inputField('accountId','Account ID','','',true) + inputField('databaseId','Database ID','','',true) + inputField('token','API token','password','',true);
+}
+function setFieldValue(id, fieldValue) {
+  const node = document.getElementById(id);
+  if (node) node.value = fieldValue === null || fieldValue === undefined ? '' : String(fieldValue);
+}
+function setFieldChecked(id, fieldValue) {
+  const node = document.getElementById(id);
+  if (node) node.checked = Boolean(fieldValue);
+}
+function synchronizeDynamicFields() {
+  const ssh = document.getElementById('sshEnabled');
+  const sshFields = document.getElementById('sshFields');
+  if (ssh && sshFields) sshFields.hidden = !ssh.checked;
+  const policy = document.getElementById('passwordPolicy');
+  const password = document.getElementById('password');
+  if (policy && password) password.disabled = policy.value === 'none';
+}
+function populateConnection(connection) {
+  setFieldValue('name', connection.name);
+  if (connection.kind === 'sqlite3' || connection.kind === 'duckdb') {
+    setFieldValue('filePath', connection.filePath);
+    return;
+  }
+  if (connection.kind === 'd1') {
+    setFieldValue('accountId', connection.accountId);
+    setFieldValue('databaseId', connection.databaseId);
+    const token = document.getElementById('token');
+    if (token) token.placeholder = 'Leave blank to keep the saved token';
+    return;
+  }
+  setFieldValue('hostOrSocket', connection.hostOrSocket);
+  setFieldValue('port', connection.port);
+  setFieldValue('username', connection.username);
+  setFieldValue('database', connection.database);
+  setFieldValue('passwordPolicy', connection.passwordPolicy);
+  setFieldValue('tlsMode', connection.tlsMode);
+  setFieldValue('keyPath', connection.keyPath);
+  setFieldValue('certPath', connection.certPath);
+  setFieldValue('caPath', connection.caPath);
+  setFieldChecked('sshEnabled', connection.ssh.enabled);
+  setFieldValue('sshHost', connection.ssh.host);
+  setFieldValue('sshPort', connection.ssh.port);
+  setFieldValue('sshUsername', connection.ssh.username);
+  setFieldValue('sshAuthMode', connection.ssh.authMode);
+  setFieldValue('sshPrivateKeyPath', connection.ssh.privateKeyPath);
+  const password = document.getElementById('password');
+  if (password && connection.passwordPolicy === 'keyring') password.placeholder = 'Leave blank to keep the saved password';
+  const sshPassword = document.getElementById('sshPassword');
+  if (sshPassword) sshPassword.placeholder = 'Leave blank to keep the saved SSH password';
+  const passphrase = document.getElementById('sshKeyPassphrase');
+  if (passphrase) passphrase.placeholder = 'Leave blank to keep the saved passphrase';
+  synchronizeDynamicFields();
+}
+function openModal(kind, connection = null) {
+  activeKind = kind;
+  editingConnectionId = connection ? connection.id : null;
+  const entry = dbs.find((item) => item[0] === kind);
+  modalTitle.textContent = connection ? 'Edit ' + connection.name : (entry ? entry[1] : kind) + ' connection';
+  if (kind === 'sqlite3' || kind === 'duckdb') formFields.innerHTML = fileFields();
+  else if (kind === 'd1') formFields.innerHTML = d1Fields();
+  else formFields.innerHTML = networkFields(entry ? entry[2] : 0, kind);
+  bindDynamicFields();
+  if (connection) populateConnection(connection);
+  synchronizeDynamicFields();
+  centerDialog(dialog);
+  dialog.showModal();
+}
+function bindDynamicFields() {
+  for (const button of document.querySelectorAll('.browse')) {
+    button.addEventListener('click', () => vscode.postMessage({ command: 'chooseFile', target: button.dataset.target }));
+  }
+  const advancedToggle = document.getElementById('advancedToggle');
+  const advancedFields = document.getElementById('advancedFields');
+  const advancedMarker = document.getElementById('advancedMarker');
+  if (advancedToggle && advancedFields) {
+    advancedToggle.addEventListener('click', () => {
+      const expanded = advancedToggle.getAttribute('aria-expanded') === 'true';
+      advancedToggle.setAttribute('aria-expanded', String(!expanded));
+      advancedFields.hidden = expanded;
+      if (advancedMarker) advancedMarker.textContent = expanded ? '▸' : '▾';
+    });
+  }
+  const ssh = document.getElementById('sshEnabled');
+  const sshFields = document.getElementById('sshFields');
+  if (ssh && sshFields) ssh.addEventListener('change', synchronizeDynamicFields);
+  const policy = document.getElementById('passwordPolicy');
+  const password = document.getElementById('password');
+  if (policy && password) policy.addEventListener('change', synchronizeDynamicFields);
+  synchronizeDynamicFields();
+}
+function value(id) { const node = document.getElementById(id); return node ? node.value : ''; }
+function checked(id) { const node = document.getElementById(id); return node ? node.checked : false; }
+function numberValue(id, fallback) { const parsed = Number(value(id)); return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback; }
+function draft() {
+  const name = value('name').trim();
+  if (!name) throw new Error('Connection name is required.');
+  if (activeKind === 'sqlite3' || activeKind === 'duckdb') {
+    const filePath = value('filePath').trim();
+    if (!filePath) throw new Error('Database file is required.');
+    return { name, kind: activeKind, filePath };
+  }
+  if (activeKind === 'd1') {
+    return { name, kind: activeKind, accountId: value('accountId').trim(), databaseId: value('databaseId').trim(), token: value('token') };
+  }
+  return {
+    name, kind: activeKind, hostOrSocket: value('hostOrSocket').trim(), port: numberValue('port', 0), username: value('username').trim(),
+    password: value('password'), database: value('database').trim(), passwordPolicy: value('passwordPolicy'), tlsMode: value('tlsMode'),
+    keyPath: value('keyPath').trim(), certPath: value('certPath').trim(), caPath: value('caPath').trim(),
+    ssh: { enabled: checked('sshEnabled'), host: value('sshHost').trim(), port: numberValue('sshPort',22), username: value('sshUsername').trim(),
+      authMode: value('sshAuthMode'), privateKeyPath: value('sshPrivateKeyPath').trim(), password: value('sshPassword'), keyPassphrase: value('sshKeyPassphrase') }
+  };
+}
+function showStatus(level, message) {
+  statusBox.textContent = message;
+  statusBox.dataset.level = level;
+  statusBox.classList.add('show');
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => statusBox.classList.remove('show'), 5000);
+}
+function setHomeTab(tab) {
+  const savedActive = tab === 'saved';
+  savedConnectionsTab.classList.toggle('active', savedActive);
+  newConnectionsTab.classList.toggle('active', !savedActive);
+  savedConnectionsTab.setAttribute('aria-selected', String(savedActive));
+  newConnectionsTab.setAttribute('aria-selected', String(!savedActive));
+  savedConnectionsPanel.hidden = !savedActive;
+  newConnectionsPanel.hidden = savedActive;
+}
+function setConnectionLoading(id, value) {
+  if (value) loadingConnectionIds.add(id); else loadingConnectionIds.delete(id);
+  const row = savedList.querySelector('[data-connection-id="' + CSS.escape(id) + '"]');
+  if (!row) return;
+  row.classList.toggle('loading', value);
+  const main = row.querySelector('.saved-main');
+  if (main) {
+    main.disabled = value;
+    main.setAttribute('aria-busy', String(value));
+  }
+}
+function hideSavedContextMenu() {
+  savedContextMenu.hidden = true;
+  contextConnectionId = null;
+}
+function showSavedContextMenu(connection, clientX, clientY) {
+  contextConnectionId = connection.id;
+  savedContextMenu.hidden = false;
+  savedContextMenu.style.left = clientX + 'px';
+  savedContextMenu.style.top = clientY + 'px';
+  const rect = savedContextMenu.getBoundingClientRect();
+  savedContextMenu.style.left = Math.max(4, Math.min(clientX, window.innerWidth - rect.width - 4)) + 'px';
+  savedContextMenu.style.top = Math.max(4, Math.min(clientY, window.innerHeight - rect.height - 4)) + 'px';
+  editSavedConnection.focus();
+}
+function renderConnections(connections) {
+  savedList.replaceChildren();
+  connectionsById.clear();
+  for (const connection of connections) connectionsById.set(connection.id, connection);
+  setHomeTab(connections.length === 0 ? 'new' : 'saved');
+  if (connections.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'No saved connections.';
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.className = 'primary';
+    create.textContent = 'Create Connection';
+    create.addEventListener('click', () => setHomeTab('new'));
+    savedList.append(empty, create);
+    return;
+  }
+  for (const connection of connections) {
+    const row = document.createElement('div');
+    row.className = 'saved';
+    row.dataset.connectionId = connection.id;
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'icon-button saved-main';
+    main.style.textAlign = 'left';
+    const spinner = document.createElement('span');
+    spinner.className = 'connection-spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    const copy = document.createElement('span');
+    copy.className = 'saved-copy';
+    const name = document.createElement('div');
+    name.className = 'saved-name';
+    name.textContent = connection.name;
+    const kind = document.createElement('div');
+    kind.className = 'saved-kind';
+    const database = dbs.find((item) => item[0] === connection.kind);
+    kind.textContent = database ? database[1] : connection.kind;
+    copy.append(name, kind);
+    main.append(spinner, copy);
+    main.addEventListener('click', () => {
+      if (loadingConnectionIds.has(connection.id)) return;
+      setConnectionLoading(connection.id, true);
+      vscode.postMessage({command:'connectSaved', id: connection.id});
+    });
+    row.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (loadingConnectionIds.has(connection.id)) return;
+      showSavedContextMenu(connection, event.clientX, event.clientY);
+    });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'icon-button';
+    remove.textContent = '×';
+    remove.title = 'Delete';
+    remove.addEventListener('click', () => vscode.postMessage({command:'deleteSaved', id: connection.id}));
+    row.append(main, remove);
+    savedList.appendChild(row);
+    if (loadingConnectionIds.has(connection.id)) setConnectionLoading(connection.id, true);
+  }
+}
+
+function centerDialog(node) {
+  node.style.left = '50%';
+  node.style.top = '50%';
+  node.style.transform = 'translate(-50%, -50%)';
+}
+function makeDialogMovable(node, handle) {
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.target.closest('button')) return;
+    const rect = node.getBoundingClientRect();
+    node.style.transform = 'none';
+    node.style.left = rect.left + 'px';
+    node.style.top = rect.top + 'px';
+    startX = event.clientX;
+    startY = event.clientY;
+    startLeft = rect.left;
+    startTop = rect.top;
+    dragging = true;
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  handle.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    const rect = node.getBoundingClientRect();
+    const maxLeft = Math.max(0, window.innerWidth - rect.width);
+    const maxTop = Math.max(0, window.innerHeight - rect.height);
+    node.style.left = Math.min(maxLeft, Math.max(0, startLeft + event.clientX - startX)) + 'px';
+    node.style.top = Math.min(maxTop, Math.max(0, startTop + event.clientY - startY)) + 'px';
+  });
+  const stop = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  };
+  handle.addEventListener('pointerup', stop);
+  handle.addEventListener('pointercancel', stop);
+}
+makeDialogMovable(dialog, document.getElementById('connectionDialogHandle'));
+savedConnectionsTab.addEventListener('click', () => setHomeTab('saved'));
+newConnectionsTab.addEventListener('click', () => setHomeTab('new'));
+
+document.getElementById('closeModal').addEventListener('click', () => dialog.close());
+dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+dialog.addEventListener('close', () => { editingConnectionId = null; });
+editSavedConnection.addEventListener('click', () => {
+  const connection = contextConnectionId ? connectionsById.get(contextConnectionId) : null;
+  hideSavedContextMenu();
+  if (connection) openModal(connection.kind, connection);
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!savedContextMenu.hidden && !savedContextMenu.contains(event.target)) hideSavedContextMenu();
+});
+window.addEventListener('blur', hideSavedContextMenu);
+window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !savedContextMenu.hidden) hideSavedContextMenu(); });
+for (const button of document.querySelectorAll('[data-action]')) {
+  button.addEventListener('click', () => {
+    try {
+      const action = button.dataset.action;
+      const connectionDraft = draft();
+      if (editingConnectionId) {
+        const command = action === 'save' ? 'updateSaved' : action === 'test' ? 'testEdited' : 'connectEdited';
+        vscode.postMessage({ command, id: editingConnectionId, draft: connectionDraft });
+      } else {
+        vscode.postMessage({ command: action, draft: connectionDraft });
+      }
+      if (action === 'save' || action === 'connectDraft') dialog.close();
+    } catch (error) {
+      showStatus('error', String(error && error.message ? error.message : error));
+    }
+  });
+}
+window.addEventListener('message', (event) => {
+  const message = event.data;
+  if (message.command === 'connections') renderConnections(message.connections);
+  else if (message.command === 'connectionLoading') setConnectionLoading(message.id, message.value);
+  else if (message.command === 'status') showStatus(message.level, message.message);
+  else if (message.command === 'chosenFile') {
+    const ids = { database:'filePath', key:'keyPath', cert:'certPath', ca:'caPath', 'ssh-key':'sshPrivateKeyPath' };
+    const node = document.getElementById(ids[message.target]); if (node) node.value = message.filePath;
+  }
+});
+</script>
+</body>
+</html>`;
+  }
+}
