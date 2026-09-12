@@ -1,8 +1,11 @@
 .vscode/**
 .git/**
 .github/**
+docs/**
+site/**
 test/**
 scripts/**
 src/**
+mkdocs.yml
 tsconfig.json
 *.vsix
