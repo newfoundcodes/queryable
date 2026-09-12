@@ -1,0 +1,155 @@
+{
+  "name": "queryable",
+  "displayName": "Queryable",
+  "description": "A typed multi-database query workbench for Visual Studio Code.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/newfoundcodes/queryable"
+  },
+  "version": "0.1.15",
+  "publisher": "newfoundcodes",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onView:queryable.home",
+    "onCommand:queryable.openHome"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "queryable.openHome",
+        "title": "Open Queryable",
+        "category": "Queryable"
+      },
+      {
+        "command": "queryable.exportJson",
+        "title": "JSON"
+      },
+      {
+        "command": "queryable.exportCsv",
+        "title": "CSV"
+      },
+      {
+        "command": "queryable.exportHtml",
+        "title": "HTML"
+      },
+      {
+        "command": "queryable.exportPdf",
+        "title": "PDF"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "queryable",
+          "title": "Queryable",
+          "icon": "media/queryable.svg"
+        }
+      ]
+    },
+    "views": {
+      "queryable": [
+        {
+          "type": "webview",
+          "id": "queryable.home",
+          "name": "Connections"
+        }
+      ]
+    },
+    "menus": {
+      "webview/context": [
+        {
+          "command": "queryable.exportJson",
+          "when": "webviewId == 'queryable.connection' && webviewSection == 'queryableExport'",
+          "group": "queryable.export@1"
+        },
+        {
+          "command": "queryable.exportCsv",
+          "when": "webviewId == 'queryable.connection' && webviewSection == 'queryableExport'",
+          "group": "queryable.export@2"
+        },
+        {
+          "command": "queryable.exportHtml",
+          "when": "webviewId == 'queryable.connection' && webviewSection == 'queryableExport'",
+          "group": "queryable.export@3"
+        },
+        {
+          "command": "queryable.exportPdf",
+          "when": "webviewId == 'queryable.connection' && webviewSection == 'queryableExport'",
+          "group": "queryable.export@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "queryable.exportJson",
+          "when": "false"
+        },
+        {
+          "command": "queryable.exportCsv",
+          "when": "false"
+        },
+        {
+          "command": "queryable.exportHtml",
+          "when": "false"
+        },
+        {
+          "command": "queryable.exportPdf",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "clean": "rimraf out",
+    "compile": "node scripts/ensure-build-deps.mjs && node ./node_modules/typescript/bin/tsc -p tsconfig.json",
+    "watch": "node scripts/ensure-build-deps.mjs && node ./node_modules/typescript/bin/tsc -w -p tsconfig.json",
+    "format": "prettier --write .",
+    "lint": "eslint .",
+    "lint:types": "node scripts/no-unsafe-types.mjs",
+    "check": "npm run lint:types && npm run compile",
+    "vscode:prepublish": "npm run check",
+    "package": "npx --yes @vscode/vsce@3.9.2 package",
+    "test": "npm run check && node --test test/*.test.mjs",
+    "audit:runtime": "npm audit --omit=dev",
+    "audit:all": "npm audit",
+    "ensure:build-deps": "node scripts/ensure-build-deps.mjs",
+    "bootstrap": "npm install --include=dev --prefer-offline --no-audit --no-fund && npm approve-scripts --allow-scripts-pending"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "1.5.5-r.4",
+    "monaco-editor": "0.52.2",
+    "mssql": "^11.0.0",
+    "oracledb": "7.0.1",
+    "ibm_db": "4.0.1",
+    "mysql2": "3.24.4",
+    "pg": "8.23.0",
+    "sqlite3": "6.0.1",
+    "ssh2": "1.17.0"
+  },
+  "devDependencies": {
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@types/mssql": "^9.1.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/ssh2": "^1.15.0",
+    "@types/vscode": "^1.96.0",
+    "rimraf": "^6.0.0",
+    "typescript": "5.9.2",
+    "typescript-eslint": "^8.69.0",
+    "eslint": "^10.10.0",
+    "prettier": "^3.9.6"
+  },
+  "allowScripts": {
+    "sqlite3@6.0.1": true,
+    "ssh2@1.17.0": true,
+    "cpu-features": false,
+    "ibm_db@4.0.1": true
+  }
+}
