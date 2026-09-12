@@ -48,9 +48,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('queryable.exportHtml', async () =>
       workbench.exportActive('html'),
     ),
-    vscode.commands.registerCommand('queryable.exportPdf', async () =>
-      workbench.exportActive('pdf'),
-    ),
   );
 }
 
