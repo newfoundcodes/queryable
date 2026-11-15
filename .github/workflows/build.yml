@@ -1,0 +1,140 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - '.github/workflows/build.yml'
+      - '.npmrc'
+      - '.vscodeignore'
+      - 'media/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - 'src/**'
+      - 'tsconfig.json'
+      - 'webview/**'
+  pull_request:
+    paths:
+      - '.github/workflows/build.yml'
+      - '.npmrc'
+      - '.vscodeignore'
+      - 'media/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - 'src/**'
+      - 'tsconfig.json'
+      - 'webview/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vsix:
+    name: VSIX / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-22.04
+          - target: darwin-arm64
+            os: macos-15
+          - target: darwin-x64
+            os: macos-15-intel
+          - target: win32-x64
+            os: windows-2022
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --include=dev --no-audit --no-fund
+
+      - name: Verify native modules for ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          node - <<'EOF'
+          const fs = require('node:fs');
+          const target = process.env.TARGET;
+
+          // Guards against a matrix entry whose runner does not match its declared target.
+          const actual = `${process.platform}-${process.arch}`;
+          if (actual !== target) {
+            console.error(`Runner is ${actual} but this job packages ${target}.`);
+            process.exit(1);
+          }
+
+          // Each of these is installed per platform; if one is missing the VSIX would install
+          // but fail at runtime when the matching database is used.
+          const required = [
+            `node_modules/@duckdb/node-bindings-${target}`,
+            'node_modules/sqlite3/build/Release/node_sqlite3.node',
+            'node_modules/ibm_db/build/Release/odbc_bindings.node',
+            'node_modules/ibm_db/installer/clidriver',
+          ];
+          const missing = required.filter((entry) => !fs.existsSync(entry));
+          if (missing.length > 0) {
+            console.error(`Missing native files for ${target}:\n  ${missing.join('\n  ')}`);
+            process.exit(1);
+          }
+
+          // Load the bindings that ship prebuilt to prove they run on this OS.
+          for (const name of ['sqlite3', '@duckdb/node-api']) {
+            require(name);
+            console.log(`loaded ${name}`);
+          }
+          console.log(`Native modules OK for ${target}.`);
+          EOF
+
+      - name: Package VSIX
+        env:
+          npm_config_include: prod
+        run: npm run package -- --target ${{ matrix.target }}
+
+      - name: Locate VSIX
+        id: vsix
+        run: |
+          shopt -s nullglob
+          files=(queryable-${{ matrix.target }}-*.vsix)
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one queryable-${{ matrix.target }}-*.vsix, found ${#files[@]}"
+            ls -la
+            exit 1
+          fi
+          echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
+          echo "Built ${files[0]} ($(wc -c < "${files[0]}") bytes)"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.vsix.outputs.path }}
+          archive: false
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
