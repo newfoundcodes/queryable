@@ -56,13 +56,3 @@ jobs:
 
       - name: Run tests
         run: node --test test/*.test.mjs
-
-      - name: Package VS Code extension
-        run: npm run package
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: queryable-vsix-${{ matrix.os }}-node-${{ matrix.node-version }}
-          path: '*.vsix'
-          if-no-files-found: error
