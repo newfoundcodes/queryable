@@ -75,6 +75,20 @@ jobs:
       - name: Install dependencies
         run: npm ci --include=dev --no-audit --no-fund
 
+      # The prebuilt sqlite3 binary for linux-x64 is linked against glibc 2.38 and libstdc++ 3.4.31,
+      # which ubuntu-22.04 (glibc 2.35) cannot load. Compiling it here ties the VSIX to the older
+      # glibc instead, so it also runs on Ubuntu 22.04, Debian 12 and RHEL 9.
+      - name: Build sqlite3 from source for linux-x64
+        if: matrix.target == 'linux-x64'
+        run: |
+          npm rebuild sqlite3 --build-from-source
+
+          # Keep only the loadable binary. Object files and gyp output would otherwise be
+          # packed into the VSIX; the prebuilt download on other targets contains just this file.
+          find node_modules/sqlite3/build -mindepth 1 -maxdepth 1 ! -name Release -exec rm -rf {} +
+          find node_modules/sqlite3/build/Release -mindepth 1 -maxdepth 1 ! -name node_sqlite3.node -exec rm -rf {} +
+          ls -la node_modules/sqlite3/build/Release
+
       - name: Verify native modules for ${{ matrix.target }}
         env:
           TARGET: ${{ matrix.target }}
