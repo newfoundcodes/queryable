@@ -24,8 +24,9 @@
 
 import { readdir, readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('../src/', import.meta.url);
+const root = fileURLToPath(new URL('../src/', import.meta.url));
 const banned = [
   { label: 'explicit any type', pattern: /\bany\b/g },
   { label: 'explicit unknown type', pattern: /\bunknown\b/g },
@@ -48,7 +49,7 @@ async function files(dir) {
 }
 
 let failed = false;
-for (const file of await files(root.pathname)) {
+for (const file of await files(root)) {
   const text = await readFile(file, 'utf8');
   const source = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
