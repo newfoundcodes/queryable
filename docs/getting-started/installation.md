@@ -27,12 +27,12 @@ npm install
 npm run package
 ```
 
-The package command produces a file named similar to `queryable-0.1.15.vsix` in the repository root. Install it in VS Code with **Extensions: Install from VSIX...**, select the file, and reload when prompted.
+The package command produces a file named similar to `queryable-db-0.1.15.vsix` in the repository root. Install it in VS Code with **Extensions: Install from VSIX...**, select the file, and reload when prompted.
 
 You can also install from a terminal:
 
 ```bash
-code --install-extension queryable-0.1.15.vsix
+code --install-extension queryable-db-0.1.15.vsix
 ```
 
 The exact filename is version-dependent. Use `ls *.vsix` or your file manager to select the generated artifact.
