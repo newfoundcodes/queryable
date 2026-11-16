@@ -1,6 +1,6 @@
 {
   "name": "queryable-db",
-  "displayName": "Queryable",
+  "displayName": "Queryable DB",
   "description": "A typed multi-database query workbench for Visual Studio Code.",
   "repository": {
     "type": "git",
