@@ -135,9 +135,9 @@ jobs:
         id: vsix
         run: |
           shopt -s nullglob
-          files=(queryable-${{ matrix.target }}-*.vsix)
+          files=(queryable-db-${{ matrix.target }}-*.vsix)
           if [ "${#files[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one queryable-${{ matrix.target }}-*.vsix, found ${#files[@]}"
+            echo "::error::Expected exactly one queryable-db-${{ matrix.target }}-*.vsix, found ${#files[@]}"
             ls -la
             exit 1
           fi
